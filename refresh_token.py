@@ -15,22 +15,24 @@ USERNAME = os.environ["URFU_USERNAME"]
 PASSWORD = os.environ["URFU_PASSWORD"]
 DUMP = "modeus_debug.html"
 
+# Селекторы проверены по фактической разметке ADFS УрФУ:
+#   userNameInput|UserName|email , passwordInput|Password|password
 USER_FIELDS = [
-    (By.CSS_SELECTOR, "input#username"),
-    (By.CSS_SELECTOR, "input[name='username']"),
-    (By.CSS_SELECTOR, "input#userName"),
-    (By.CSS_SELECTOR, "input[type='text']"),
+    (By.CSS_SELECTOR, "input#userNameInput"),
+    (By.CSS_SELECTOR, "input[name='UserName']"),
+    (By.CSS_SELECTOR, "input#txtUserName"),
+    (By.CSS_SELECTOR, "input[type='email']"),
 ]
 PASS_FIELDS = [
-    (By.CSS_SELECTOR, "input#password"),
-    (By.CSS_SELECTOR, "input[name='password']"),
+    (By.CSS_SELECTOR, "input#passwordInput"),
+    (By.CSS_SELECTOR, "input[name='Password']"),
     (By.CSS_SELECTOR, "input[type='password']"),
 ]
 SUBMIT = [
     (By.CSS_SELECTOR, "input#submitButton"),
-    (By.CSS_SELECTOR, "input[type='submit']"),
+    (By.CSS_SELECTOR, "input[name='submitButton']"),
     (By.CSS_SELECTOR, "button[type='submit']"),
-    (By.CSS_SELECTOR, "button[name='submit']"),
+    (By.XPATH, "//input[@type='submit' and @value='Sign in']"),
 ]
 
 
@@ -114,6 +116,7 @@ def locate(driver, options, timeout=30):
                 return el
         except Exception:
             continue
+    # запасной путь: те же поля внутри iframe
     try:
         for frame in driver.find_elements(By.TAG_NAME, "iframe"):
             driver.switch_to.frame(frame)
