@@ -1,4 +1,4 @@
-"""Обновляет id_token УрФУ. Токен — в stdout, диагностика — в stderr и файл."""
+"""Токен УрФУ из кэша; протух — логин через Selenium. Токен в stdout, логи в stderr."""
 
 import os
 import re
@@ -15,13 +15,14 @@ from selenium.webdriver.support.ui import WebDriverWait
 URL = "https://urfu.modeus.org/schedule-calendar/my"
 USERNAME = os.environ["URFU_USERNAME"]
 PASSWORD = os.environ["URFU_PASSWORD"]
+CACHE = "token.cache"
 DUMP = "modeus_debug.html"
+MAX_AGE = 25 * 60  # кэш считаем свежим 25 минут
 
-# Селекторы проверены по фактической разметке ADFS УрФУ
+# Селекторы проверены по разметке ADFS УрФУ
 USER_FIELDS = [
     (By.CSS_SELECTOR, "input#userNameInput"),
     (By.CSS_SELECTOR, "input[name='UserName']"),
-    (By.CSS_SELECTOR, "input#txtUserName"),
     (By.CSS_SELECTOR, "input[type='email']"),
 ]
 PASS_FIELDS = [
@@ -33,7 +34,6 @@ SUBMIT = [
     (By.CSS_SELECTOR, "input#submitButton"),
     (By.CSS_SELECTOR, "input[name='submitButton']"),
     (By.CSS_SELECTOR, "button[type='submit']"),
-    (By.XPATH, "//input[@type='submit' and @value='Sign in']"),
 ]
 
 JWT_RE = re.compile(r"^[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}$")
@@ -41,6 +41,23 @@ JWT_RE = re.compile(r"^[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,
 
 def log(msg):
     print(msg, file=sys.stderr, flush=True)
+
+
+def read_cache():
+    try:
+        if time.time() - os.stat(CACHE).st_mtime > MAX_AGE:
+            log("Кэш протух")
+            return None
+        with open(CACHE, encoding="utf-8") as f:
+            token = f.read().strip()
+        return token if JWT_RE.match(token) else None
+    except (OSError, ValueError):
+        return None
+
+
+def write_cache(token):
+    with open(CACHE, "w", encoding="utf-8") as f:
+        f.write(token)
 
 
 def build():
@@ -59,7 +76,6 @@ def build():
 
 
 def dump_storage(driver):
-    """Все ключи localStorage и sessionStorage."""
     try:
         return driver.execute_script("""
             const out = {};
@@ -78,7 +94,6 @@ def dump_storage(driver):
 
 
 def token_from_url(driver):
-    """Токен может лежать во фрагменте, пока SPA его не съела."""
     try:
         frag = driver.execute_script("return window.location.hash;") or ""
     except Exception:
@@ -89,16 +104,15 @@ def token_from_url(driver):
     for key in ("id_token", "access_token", "token"):
         value = (qs.get(key) or [None])[0]
         if value and JWT_RE.match(value):
-            log(f"Токен найден во фрагменте URL: {key}")
+            log(f"Токен во фрагменте URL: {key}")
             return value
     return None
 
 
 def find_token(driver):
-    """JWT = строка ровно с двумя точками; ищем в обоих хранилищах."""
     for name, value in dump_storage(driver).items():
         if isinstance(value, str) and JWT_RE.match(value.strip()):
-            log(f"Токен найден в {name} (длина {len(value)})")
+            log(f"Токен в {name} (длина {len(value)})")
             return value.strip()
     return None
 
@@ -127,24 +141,17 @@ def probe(driver):
     log(f"url  = {driver.current_url[:200]}")
     log(f"title= {driver.title[:160]}")
     try:
-        log(f"iframes = {len(driver.find_elements(By.TAG_NAME, 'iframe'))}")
         storage = dump_storage(driver)
         log(f"storage keys = {[(k, len(str(v))) for k, v in storage.items()]}")
-        try:
-            frag = driver.execute_script("return window.location.hash;")
-            log(f"hash = {str(frag)[:200]}")
-        except Exception:
-            pass
         text = driver.execute_script("return document.body ? document.body.innerText : ''")
-        log(f"text  = {text[:500]!r}")
+        log(f"text  = {text[:400]!r}")
     except Exception as e:
         log(f"probe не удался: {e}")
     try:
         with open(DUMP, "w", encoding="utf-8") as f:
             f.write(driver.page_source)
-        log(f"HTML сохранён в {DUMP}")
-    except OSError as e:
-        log(f"HTML не сохранился: {e}")
+    except OSError:
+        pass
 
 
 def locate(driver, options, timeout=30):
@@ -179,20 +186,17 @@ def locate(driver, options, timeout=30):
     return None
 
 
-def run() -> str | None:
+def login():
     driver = build()
     try:
         driver.get(URL)
         ready(driver)
 
-        # 1. Сессия может уже быть
-        token = wait_token(driver, 25, "без логина")
+        token = wait_token(driver, 20, "без логина")
         if token:
             return token
 
         log("Авторизации нет, ищу форму входа…")
-
-        # 2. Логин УрФУ (ADFS)
         user = locate(driver, USER_FIELDS)
         if user is None:
             probe(driver)
@@ -214,7 +218,6 @@ def run() -> str | None:
             driver.switch_to.active_element.submit()
         log("Вход отправлен")
 
-        # 3. После редиректа ловим JWT из фрагмента или хранилищ
         token = wait_token(driver, 60, "после логина")
         if token:
             return token
@@ -226,8 +229,17 @@ def run() -> str | None:
 
 
 if __name__ == "__main__":
-    result = run()
-    if result:
-        print(result)
+    token = read_cache()
+    if token:
+        log("Взял токен из кэша")
+    else:
+        token = login()
+        if token:
+            try:
+                write_cache(token)
+            except OSError as e:
+                log(f"Кэш не записан: {e}")
+    if token:
+        print(token)
     else:
         sys.exit(1)
