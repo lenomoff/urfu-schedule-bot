@@ -1,8 +1,10 @@
 """Обновляет id_token УрФУ. Токен — в stdout, диагностика — в stderr и файл."""
 
 import os
+import re
 import sys
 import time
+from urllib.parse import parse_qs, urlparse
 
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -15,8 +17,7 @@ USERNAME = os.environ["URFU_USERNAME"]
 PASSWORD = os.environ["URFU_PASSWORD"]
 DUMP = "modeus_debug.html"
 
-# Селекторы проверены по фактической разметке ADFS УрФУ:
-#   userNameInput|UserName|email , passwordInput|Password|password
+# Селекторы проверены по фактической разметке ADFS УрФУ
 USER_FIELDS = [
     (By.CSS_SELECTOR, "input#userNameInput"),
     (By.CSS_SELECTOR, "input[name='UserName']"),
@@ -34,6 +35,8 @@ SUBMIT = [
     (By.CSS_SELECTOR, "button[type='submit']"),
     (By.XPATH, "//input[@type='submit' and @value='Sign in']"),
 ]
+
+JWT_RE = re.compile(r"^[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}$")
 
 
 def log(msg):
@@ -55,17 +58,54 @@ def build():
     return webdriver.Chrome(options=o)
 
 
-def read_token(driver):
+def dump_storage(driver):
+    """Все ключи localStorage и sessionStorage."""
     try:
-        return driver.execute_script("return localStorage.getItem('id_token');")
+        return driver.execute_script("""
+            const out = {};
+            for (let i = 0; i < localStorage.length; i++) {
+                const k = localStorage.key(i);
+                out['local:' + k] = localStorage.getItem(k);
+            }
+            for (let i = 0; i < sessionStorage.length; i++) {
+                const k = sessionStorage.key(i);
+                out['session:' + k] = sessionStorage.getItem(k);
+            }
+            return out;
+        """) or {}
+    except Exception:
+        return {}
+
+
+def token_from_url(driver):
+    """Токен может лежать во фрагменте, пока SPA его не съела."""
+    try:
+        frag = driver.execute_script("return window.location.hash;") or ""
     except Exception:
         return None
+    if not frag:
+        return None
+    qs = parse_qs(urlparse("http://x" + frag).query)
+    for key in ("id_token", "access_token", "token"):
+        value = (qs.get(key) or [None])[0]
+        if value and JWT_RE.match(value):
+            log(f"Токен найден во фрагменте URL: {key}")
+            return value
+    return None
+
+
+def find_token(driver):
+    """JWT = строка ровно с двумя точками; ищем в обоих хранилищах."""
+    for name, value in dump_storage(driver).items():
+        if isinstance(value, str) and JWT_RE.match(value.strip()):
+            log(f"Токен найден в {name} (длина {len(value)})")
+            return value.strip()
+    return None
 
 
 def wait_token(driver, seconds, label):
-    """Поллит localStorage: после OAuth-редиректа SPA ставит токен не мгновенно."""
     for i in range(seconds * 2):
-        token = read_token(driver)
+        token = token_from_url(driver) or find_token(driver)
         if token:
             log(f"Токен получен ({label}), жд {i // 2} с")
             return token
@@ -84,17 +124,19 @@ def ready(driver, timeout=45):
 
 def probe(driver):
     log("--- ДИАГНОСТИКА ---")
-    log(f"url  = {driver.current_url[:160]}")
+    log(f"url  = {driver.current_url[:200]}")
     log(f"title= {driver.title[:160]}")
     try:
         log(f"iframes = {len(driver.find_elements(By.TAG_NAME, 'iframe'))}")
-        inputs = driver.execute_script(
-            "return Array.from(document.querySelectorAll('input'))"
-            ".map(e => e.id + '|' + e.name + '|' + e.type)"
-        )
-        log(f"inputs = {inputs[:20]}")
+        storage = dump_storage(driver)
+        log(f"storage keys = {[(k, len(str(v))) for k, v in storage.items()]}")
+        try:
+            frag = driver.execute_script("return window.location.hash;")
+            log(f"hash = {str(frag)[:200]}")
+        except Exception:
+            pass
         text = driver.execute_script("return document.body ? document.body.innerText : ''")
-        log(f"text  = {text[:600]!r}")
+        log(f"text  = {text[:500]!r}")
     except Exception as e:
         log(f"probe не удался: {e}")
     try:
@@ -116,7 +158,6 @@ def locate(driver, options, timeout=30):
                 return el
         except Exception:
             continue
-    # запасной путь: те же поля внутри iframe
     try:
         for frame in driver.find_elements(By.TAG_NAME, "iframe"):
             driver.switch_to.frame(frame)
@@ -144,14 +185,14 @@ def run() -> str | None:
         driver.get(URL)
         ready(driver)
 
-        # 1. Возможно, сессия уже есть — токен лежит в localStorage
+        # 1. Сессия может уже быть
         token = wait_token(driver, 25, "без логина")
         if token:
             return token
 
         log("Авторизации нет, ищу форму входа…")
 
-        # 2. Форма входа УрФУ (ADFS)
+        # 2. Логин УрФУ (ADFS)
         user = locate(driver, USER_FIELDS)
         if user is None:
             probe(driver)
@@ -173,7 +214,7 @@ def run() -> str | None:
             driver.switch_to.active_element.submit()
         log("Вход отправлен")
 
-        # 3. После редиректа обратно в Modeus дожидаемся токена
+        # 3. После редиректа ловим JWT из фрагмента или хранилищ
         token = wait_token(driver, 60, "после логина")
         if token:
             return token
