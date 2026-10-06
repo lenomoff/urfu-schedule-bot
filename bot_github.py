@@ -16,11 +16,11 @@ CHAT_ID = int(os.environ.get("CHAT_ID", "0") or 0)
 
 API_URL = "https://urfu.modeus.org/schedule-calendar-v2/api/calendar/events/search"
 PERSON_ID = "330d3b77-3f42-457d-9642-cc95bd6c0b5f"
-TZ = timezone(timedelta(hours=5))  # Asia/Yekaterinburg, без перехода на летнее время
+TZ = timezone(timedelta(hours=5))
 UTC = timezone.utc
 
 REMINDERS = (30, 15)
-WINDOW = timedelta(minutes=15)  # допуск, если запуск workflow задержался
+WINDOW = timedelta(minutes=15)
 STATE_FILE = "state.json"
 
 HEADERS = {
@@ -60,6 +60,30 @@ TIPS = {
 
 TYPE_LABEL = {"LAB": "🔬 Лабораторная", "LECT": "📖 Лекция", "SEMI": "💻 Практика"}
 
+# cmd -> (действие, сдвиг дней)
+COMMANDS = {
+    "/start": ("start", 0),
+    "/help": ("start", 0),
+    "/help": ("start", 0),
+    "/сегодня": ("day", 0),
+    "/today": ("day", 0),
+    "/завтра": ("day", 1),
+    "/tomorrow": ("day", 1),
+    "/неделя": ("week", 0),
+    "/week": ("week", 0),
+}
+CALLBACKS = {
+    "today": ("day", 0),
+    "tomorrow": ("day", 1),
+    "week": ("week", 0),
+}
+
+KB = InlineKeyboardMarkup(inline_keyboard=[
+    [InlineKeyboardButton(text="📋 Сегодня", callback_data="today"),
+     InlineKeyboardButton(text="📅 Завтра", callback_data="tomorrow")],
+    [InlineKeyboardButton(text="🗓 Неделя", callback_data="week")],
+])
+
 
 def log(msg):
     print(msg, flush=True)
@@ -78,18 +102,15 @@ def load_state() -> dict:
     return {"notified": []}
 
 
-def save_state(state: dict) -> bool:
+def save_state(state: dict) -> None:
     try:
         with open(STATE_FILE, "w", encoding="utf-8") as f:
             json.dump(state, f, ensure_ascii=False, indent=2)
-        return True
     except OSError as e:
         log(f"state.json не сохранён: {e}")
-        return False
 
 
 async def get_schedule(day: datetime, session) -> list[dict]:
-    """Расписание на указанный локальный день, отсортированное по времени."""
     if not MODEUS_TOKEN:
         log("MODEUS_TOKEN пуст — расписание пропущено")
         return []
@@ -110,7 +131,7 @@ async def get_schedule(day: datetime, session) -> list[dict]:
             json=payload, headers=headers, ssl=False, timeout=30,
         ) as resp:
             if resp.status == 401:
-                log("Токен УрФУ протух (401) — нужен новый refresh")
+                log("Токен УрФУ протух (401)")
                 return []
             if resp.status != 200:
                 log(f"Modeus API: HTTP {resp.status}")
@@ -130,7 +151,7 @@ async def get_schedule(day: datetime, session) -> list[dict]:
     return lessons
 
 
-async def fetch_detail(session, event_id: str, headers: dict) -> dict | None:
+async def fetch_detail(session, event_id: str, headers: dict):
     if not event_id:
         return None
     url = f"https://urfu.modeus.org/schedule-calendar-v2/api/calendar/events/{event_id}"
@@ -172,22 +193,19 @@ def parse_lesson(detail: dict) -> dict:
     }
 
 
-def render(lesson: dict) -> str:
-    tip = random.choice(TIPS.get(lesson["type"], TIPS["default"]))
-    label = TYPE_LABEL.get(lesson["type"], "📚 Занятие")
-    return (
-        f"{label} · <b>{lesson['start']:%H:%M}–{lesson['end']:%H:%M}</b>\n"
-        f"<b>{lesson['name']}</b>\n"
-        f"👨‍🏫 {lesson['teacher']}  ·  {lesson['location']}\n\n"
-        f"💡 {tip}"
-    )
-
-
 def render_day(lessons: list[dict], header: str) -> str:
     if not lessons:
         return f"{header}\n\nПар нет."
     lines = [header, ""]
-    lines += [f"{render(lesson)}\n" for lesson in lessons]
+    for lesson in lessons:
+        tip = random.choice(TIPS.get(lesson["type"], TIPS["default"]))
+        label = TYPE_LABEL.get(lesson["type"], "📚 Занятие")
+        lines.append(
+            f"{label} · <b>{lesson['start']:%H:%M}–{lesson['end']:%H:%M}</b>\n"
+            f"<b>{lesson['name']}</b>\n"
+            f"👨‍🏫 {lesson['teacher']}  ·  {lesson['location']}\n\n"
+            f"💡 {tip}\n"
+        )
     return "\n".join(lines).strip()
 
 
@@ -203,54 +221,62 @@ def render_reminder(lesson: dict, minutes: int) -> str:
     )
 
 
-KB = InlineKeyboardMarkup(inline_keyboard=[
-    [InlineKeyboardButton(text="📋 Сегодня", callback_data="today"),
-     InlineKeyboardButton(text="📅 Завтра", callback_data="tomorrow")],
-    [InlineKeyboardButton(text="🗓 Неделя", callback_data="week")],
-])
-
-
 async def handle_updates(bot: Bot, session) -> None:
-    """Обрабатывает накопившиеся команды через getUpdates."""
     try:
         updates = await bot.get_updates(timeout=0, allowed_updates=["message", "callback_query"])
     except Exception as e:
         log(f"getUpdates не удался: {e}")
         return
 
+    log(f"Апдейтов получено: {len(updates)}")
+    if not updates:
+        log("Новых сообщений нет")
+
     for update in updates:
+        chat_id = None
+        action = None        offset = 0
+
         try:
             if update.callback_query:
                 await bot.answer_callback_query(update.callback_query.id)
-                when = {"today": 0, "tomorrow": 1, "week": None}.get(update.callback_query.data)
-                if when is None:
-                    continue
-                chat_id, text = update.callback_query.message.chat.id, None
+                chat_id = update.callback_query.message.chat.id
+                action, offset = CALLBACKS.get(update.callback_query.data, (None, 0))
             elif update.message and update.message.text:
-                cmd = update.message.text.split("@")[0].split()[0].lower()
-                when = {"/start": None, "/today": 0, "/завтра": 1, "/tomorrow": 1, "/week": None}.get(cmd)
-                if when is None:
-                    continue
                 chat_id = update.message.chat.id
+                cmd = update.message.text.split("@")[0].split()[0].lower()
+                action, offset = COMMANDS.get(cmd, (None, 0))
             else:
                 continue
 
-            now = datetime.now(TZ)
-            if when is None and update.callback_query is None:
-                await bot.send_message(chat_id, "👋 Бот расписания УрФУ", reply_markup=KB)
+            if chat_id is None or action is None:
                 continue
 
-            if when is None:  # неделя
+            log(f"Обрабатываю {action} (сдвиг {offset}) для {chat_id}")
+
+            if action == "start":
+                await bot.send_message(
+                    chat_id,
+                    "👋 Бот расписания УрФУ.\n\n"
+                    f"📋 Сегодня · 📅 Завтра · 🗓 Неделя\n"
+                    f"🔔 Уведомляю за 30 и 15 минут до пары.",
+                    reply_markup=KB,
+                )
+                continue
+
+            day = datetime.now(TZ) + timedelta(days=offset)
+
+            if action == "day":
+                text = render_day(
+                    await get_schedule(day, session),
+                    f"📅 <b>{'Сегодня' if offset == 0 else 'Завтра'}, {day:%d.%m.%Y}</b>",
+                )
+            else:
                 parts = []
                 for i in range(7):
-                    day = now + timedelta(days=i)
-                    parts.append(render_day(await get_schedule(day, session),
-                                           f"<b>{day:%d.%m.%Y %A}</b>"))
+                    d = day + timedelta(days=i)
+                    parts.append(render_day(await get_schedule(d, session),
+ f"<b>{d:%d.%m.%Y}</b>"))
                 text = "🗓 <b>Расписание на неделю</b>\n\n" + "\n\n".join(parts)
-            else:
-                day = now + timedelta(days=when)
-                text = render_day(await get_schedule(day, session),
-                                  f"📅 <b>{'Сегодня' if when == 0 else 'Завтра'}, {day:%d.%m.%Y}</b>")
 
             await bot.send_message(chat_id, text, parse_mode=ParseMode.HTML)
         except Exception as e:
@@ -258,15 +284,14 @@ async def handle_updates(bot: Bot, session) -> None:
 
 
 async def notify(bot: Bot, session, state: dict) -> None:
-    """Уведомления за 30 и 15 минут, без повторов."""
     if not CHAT_ID:
         log("CHAT_ID не задан — уведомления отключены")
         return
 
     now = datetime.now(TZ)
     lessons = await get_schedule(now, session)
+    log(f"Пар сегодня: {len(lessons)}")
     done = set(state["notified"])
-    fresh: list[str] = []
 
     for lesson in lessons:
         for minutes in REMINDERS:
@@ -279,24 +304,20 @@ async def notify(bot: Bot, session, state: dict) -> None:
                     await bot.send_message(CHAT_ID, render_reminder(lesson, minutes),
                                            parse_mode=ParseMode.HTML)
                     log(f"Уведомление за {minutes} мин: {lesson['name']}")
+                    done.add(key)
                 except Exception as e:
                     log(f"Не отправить уведомление: {e}")
-                    continue
-                done.add(key)
-                fresh.append(key)
 
     state["notified"] = sorted(done)
-    if fresh:
-        save_state(state)
+    save_state(state)
 
 
 async def main() -> None:
-    if not MODEUS_TOKEN:
-        log("MODEUS_TOKEN пуст — сначала отработает refresh-token")
-        return
+    log(f"CHAT_ID={CHAT_ID}, токен УрФУ: {'есть' if MODEUS_TOKEN else 'НЕТ'}")
 
+    if not MODEUS_TOKEN:
+        log("Без токена УрФУ работают только команды")
     bot = Bot(token=BOT_TOKEN)
-    # webhook конфликтует с getUpdates; pending-апдейты сохраняем
     await bot.delete_webhook(drop_pending_updates=False)
 
     import aiohttp
