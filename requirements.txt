@@ -1,0 +1,8 @@
+aiogram==3.7.0
+apscheduler==3.10.4
+aiohttp==3.9.1
+pydantic==2.4.2
+pydantic-core==2.10.1
+magic-filter==1.0.12
+certifi==2023.11.17
+typing-extensions==4.9.0
