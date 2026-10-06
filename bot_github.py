@@ -8,7 +8,6 @@ from datetime import datetime, timedelta, timezone
 
 from aiogram import Bot
 from aiogram.enums import ParseMode
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 MODEUS_TOKEN = os.environ.get("MODEUS_TOKEN", "")
@@ -63,25 +62,27 @@ TYPE_LABEL = {"LAB": "🔬 Лабораторная", "LECT": "📖 Лекция
 COMMANDS = {
     "/start": ("start", 0),
     "/help": ("start", 0),
+    "/меню": ("start", 0),
     "/сегодня": ("day", 0),
     "/today": ("day", 0),
     "/завтра": ("day", 1),
     "/tomorrow": ("day", 1),
     "/неделя": ("week", 0),
     "/week": ("week", 0),
+ "/расписание": ("day", 0),
+    "/schedule": ("day", 0),
 }
 
-CALLBACKS = {
-    "today": ("day", 0),
-    "tomorrow": ("day", 1),
-    "week": ("week", 0),
-}
-
-KB = InlineKeyboardMarkup(inline_keyboard=[
-    [InlineKeyboardButton(text="📋 Сегодня", callback_data="today"),
-     InlineKeyboardButton(text="📅 Завтра", callback_data="tomorrow")],
-    [InlineKeyboardButton(text="🗓 Неделя", callback_data="week")],
-])
+WELCOME = (
+    "👋 <b>Бот расписания УрФУ</b>\n\n"
+    "🔔 Уведомляю за <b>30</b> и <b>15</b> минут до пары.\n"
+    "⏱ Отвечаю в пределах 5–10 минут — бот запускается по расписанию.\n\n"
+    "<b>Команды</b>\n"
+    "/сегодня — расписание на сегодня\n"
+    "/завтра — расписание на завтра\n"
+    "/неделя — расписание на неделю\n"
+    "/меню — эта справка\n"
+)
 
 
 def log(msg):
@@ -194,7 +195,7 @@ def parse_lesson(detail: dict) -> dict:
 
 def render_day(lessons: list[dict], header: str) -> str:
     if not lessons:
-        return f"{header}\n\nПар нет."
+        return f"{header}\n\n<i>Пар нет.</i>"
     lines = [header, ""]
     for lesson in lessons:
         tip = random.choice(TIPS.get(lesson["type"], TIPS["default"]))
@@ -222,7 +223,7 @@ def render_reminder(lesson: dict, minutes: int) -> str:
 
 async def handle_updates(bot: Bot, session) -> None:
     try:
-        updates = await bot.get_updates(timeout=0, allowed_updates=["message", "callback_query"])
+        updates = await bot.get_updates(timeout=0, allowed_updates=["message"])
     except Exception as e:
         log(f"getUpdates не удался: {e}")
         return
@@ -232,35 +233,22 @@ async def handle_updates(bot: Bot, session) -> None:
         log("Новых сообщений нет")
 
     for update in updates:
-        chat_id = None
-        action = None
-        offset = 0
-
         try:
-            if update.callback_query:
-                await bot.answer_callback_query(update.callback_query.id)
-                chat_id = update.callback_query.message.chat.id
-                action, offset = CALLBACKS.get(update.callback_query.data, (None, 0))
-            elif update.message and update.message.text:
-                chat_id = update.message.chat.id
-                cmd = update.message.text.split("@")[0].split()[0].lower()
-                action, offset = COMMANDS.get(cmd, (None, 0))
-            else:
+            message = update.message
+            if not message or not message.text:
                 continue
 
-            if chat_id is None or action is None:
+            chat_id = message.chat.id
+            cmd = message.text.split("@")[0].split()[0].lower()
+            action, offset = COMMANDS.get(cmd, (None, 0))
+            if action is None:
+                log(f"Неизвестная команда {cmd} от {chat_id}")
                 continue
 
             log(f"Обрабатываю {action} (сдвиг {offset}) для {chat_id}")
 
             if action == "start":
-                await bot.send_message(
-                    chat_id,
-                    "👋 Бот расписания УрФУ.\n\n"
-                    "📋 Сегодня · 📅 Завтра · 🗓 Неделя\n"
-                    "🔔 Уведомляю за 30 и 15 минут до пары.",
-                    reply_markup=KB,
-                )
+                await bot.send_message(chat_id, WELCOME, parse_mode=ParseMode.HTML)
                 continue
 
             day = datetime.now(TZ) + timedelta(days=offset)
@@ -280,6 +268,7 @@ async def handle_updates(bot: Bot, session) -> None:
                     ))
                 text = "🗓 <b>Расписание на неделю</b>\n\n" + "\n\n".join(parts)
 
+            text += "\n\n— /меню"
             await bot.send_message(chat_id, text, parse_mode=ParseMode.HTML)
         except Exception as e:
             log(f"Ошибка обработки апдейта: {e}")
