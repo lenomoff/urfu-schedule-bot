@@ -1,4 +1,4 @@
-"""Обновляет id_token УрФУ. Токен печатает в stdout, диагностику — в stderr и файл."""
+"""Обновляет id_token УрФУ. Токен — в stdout, диагностика — в stderr и файл."""
 
 import os
 import sys
@@ -20,7 +20,6 @@ USER_FIELDS = [
     (By.CSS_SELECTOR, "input[name='username']"),
     (By.CSS_SELECTOR, "input#userName"),
     (By.CSS_SELECTOR, "input[type='text']"),
-    (By.CSS_SELECTOR, "input[type='email']"),
 ]
 PASS_FIELDS = [
     (By.CSS_SELECTOR, "input#password"),
@@ -54,8 +53,25 @@ def build():
     return webdriver.Chrome(options=o)
 
 
+def read_token(driver):
+    try:
+        return driver.execute_script("return localStorage.getItem('id_token');")
+    except Exception:
+        return None
+
+
+def wait_token(driver, seconds, label):
+    """Поллит localStorage: после OAuth-редиректа SPA ставит токен не мгновенно."""
+    for i in range(seconds * 2):
+        token = read_token(driver)
+        if token:
+            log(f"Токен получен ({label}), жд {i // 2} с")
+            return token
+        time.sleep(0.5)
+    return None
+
+
 def ready(driver, timeout=45):
-    """Ждём полной отрисовки страницы."""
     try:
         WebDriverWait(driver, timeout).until(
             lambda d: d.execute_script("return document.readyState") == "complete"
@@ -65,13 +81,11 @@ def ready(driver, timeout=45):
 
 
 def probe(driver):
-    """Печатает, что реально есть на странице."""
     log("--- ДИАГНОСТИКА ---")
     log(f"url  = {driver.current_url[:160]}")
     log(f"title= {driver.title[:160]}")
     try:
-        frames = len(driver.find_elements(By.TAG_NAME, "iframe"))
-        log(f"iframes = {frames}")
+        log(f"iframes = {len(driver.find_elements(By.TAG_NAME, 'iframe'))}")
         inputs = driver.execute_script(
             "return Array.from(document.querySelectorAll('input'))"
             ".map(e => e.id + '|' + e.name + '|' + e.type)"
@@ -89,7 +103,7 @@ def probe(driver):
         log(f"HTML не сохранился: {e}")
 
 
-def locate(driver, options, timeout=45):
+def locate(driver, options, timeout=30):
     for by, value in options:
         try:
             el = WebDriverWait(driver, timeout).until(
@@ -100,7 +114,6 @@ def locate(driver, options, timeout=45):
                 return el
         except Exception:
             continue
-    # запасной путь: те же поля внутри iframe
     try:
         for frame in driver.find_elements(By.TAG_NAME, "iframe"):
             driver.switch_to.frame(frame)
@@ -127,8 +140,15 @@ def run() -> str | None:
     try:
         driver.get(URL)
         ready(driver)
-        log("Загрузил Modeus, жду форму входа УрФУ…")
 
+        # 1. Возможно, сессия уже есть — токен лежит в localStorage
+        token = wait_token(driver, 25, "без логина")
+        if token:
+            return token
+
+        log("Авторизации нет, ищу форму входа…")
+
+        # 2. Форма входа УрФУ (ADFS)
         user = locate(driver, USER_FIELDS)
         if user is None:
             probe(driver)
@@ -148,17 +168,12 @@ def run() -> str | None:
             submit.click()
         else:
             driver.switch_to.active_element.submit()
-        log("Вход отправлен, жду токен…")
+        log("Вход отправлен")
 
-        for _ in range(45):
-            try:
-                if driver.execute_script("return document.readyState") == "complete":
-                    token = driver.execute_script("return localStorage.getItem('id_token');")
-                    if token:
-                        return token
-            except Exception:
-                pass
-            time.sleep(2)
+        # 3. После редиректа обратно в Modeus дожидаемся токена
+        token = wait_token(driver, 60, "после логина")
+        if token:
+            return token
 
         probe(driver)
         return None
