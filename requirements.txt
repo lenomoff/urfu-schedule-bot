@@ -5,4 +5,5 @@ pydantic==2.4.2
 pydantic-core==2.10.1
 magic-filter==1.0.12
 certifi==2023.11.17
+flask==3.0.0
 typing-extensions==4.9.0
