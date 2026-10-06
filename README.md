@@ -1,1 +1,0 @@
-# urfu-schedule-bot
