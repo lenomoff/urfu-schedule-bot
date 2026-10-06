@@ -1,21 +1,38 @@
 name: Refresh Modeus Token
 
 on:
+  workflow_dispatch:
   schedule:
-    - cron: '*/30 * * * *'
+    - cron: "13,43 * * * *"
+
+permissions:
+  contents: write
 
 jobs:
   refresh:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-      - run: pip install selenium webdriver-manager requests
-      - run: python refresh_token.py
+          python-version: "3.11"
+
+      - name: Установить зависимости
+        run: pip install selenium
+
+      - name: Обновить секрет MODEUS_TOKEN
         env:
           URFU_USERNAME: ${{ secrets.URFU_USERNAME }}
           URFU_PASSWORD: ${{ secrets.URFU_PASSWORD }}
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-          PROJECT_ID: ${{ secrets.PROJECT_ID }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TOKEN=$(python refresh_token.py)
+          if [ -z "$TOKEN" ]; then
+            echo "::error::Не удалось получить токен УрФУ"
+            exit 1
+          fi
+          echo "::add-mask::$TOKEN"
+          echo "$TOKEN" | gh secret set MODEUS_TOKEN
+          echo "Секрет MODEUS_TOKEN обновлён"
