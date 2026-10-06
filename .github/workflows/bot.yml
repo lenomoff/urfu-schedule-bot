@@ -11,7 +11,7 @@ permissions:
 jobs:
   bot:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
 
@@ -20,23 +20,48 @@ jobs:
           python-version: "3.11"
 
       - name: Установить зависимости
-        run: pip install aiogram==3.13.1 aiohttp==3.9.5
+        run: pip install aiogram==3.13.1 aiohttp==3.9.5 selenium
+
+      - name: Восстановить кэш токена
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          key: modeus-token-${{ github.run_id }}
+          restore-keys: |
+            modeus-token-
+
+      - name: Получить токен УрФУ
+        env:
+          URFU_USERNAME: ${{ secrets.URFU_USERNAME }}
+          URFU_PASSWORD: ${{ secrets.URFU_PASSWORD }}
+        run: |
+          TOKEN=$(python refresh_token.py)
+          if [ -z "$TOKEN" ]; then
+            echo "::error::Не удалось получить токен УрФУ"
+            exit 1
+          fi
+          echo "::add-mask::$TOKEN"
+          echo "MODEUS_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+
+      - name: Сохранить кэш токена
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          key: modeus-token-${{ github.run_id }}
+          path: token.cache
 
       - name: Запустить бота
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          MODEUS_TOKEN: ${{ secrets.MODEUS_TOKEN }}
+          MODEUS_TOKEN: ${{ env.MODEUS_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
         run: python bot_github.py
 
       - name: Сохранить state.json
+        if: always()
         run: |
-          if git diff --quiet -- state.json; then
-            echo "Изменений нет"
-            exit 0
-          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add state.json
-          git commit -m "bot: state"
+          git diff --staged --quiet || git commit -m "bot: state"
           git push
