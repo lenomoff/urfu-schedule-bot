@@ -60,10 +60,8 @@ TIPS = {
 
 TYPE_LABEL = {"LAB": "🔬 Лабораторная", "LECT": "📖 Лекция", "SEMI": "💻 Практика"}
 
-# cmd -> (действие, сдвиг дней)
 COMMANDS = {
     "/start": ("start", 0),
-    "/help": ("start", 0),
     "/help": ("start", 0),
     "/сегодня": ("day", 0),
     "/today": ("day", 0),
@@ -72,6 +70,7 @@ COMMANDS = {
     "/неделя": ("week", 0),
     "/week": ("week", 0),
 }
+
 CALLBACKS = {
     "today": ("day", 0),
     "tomorrow": ("day", 1),
@@ -234,7 +233,8 @@ async def handle_updates(bot: Bot, session) -> None:
 
     for update in updates:
         chat_id = None
-        action = None        offset = 0
+        action = None
+        offset = 0
 
         try:
             if update.callback_query:
@@ -257,8 +257,8 @@ async def handle_updates(bot: Bot, session) -> None:
                 await bot.send_message(
                     chat_id,
                     "👋 Бот расписания УрФУ.\n\n"
-                    f"📋 Сегодня · 📅 Завтра · 🗓 Неделя\n"
-                    f"🔔 Уведомляю за 30 и 15 минут до пары.",
+                    "📋 Сегодня · 📅 Завтра · 🗓 Неделя\n"
+                    "🔔 Уведомляю за 30 и 15 минут до пары.",
                     reply_markup=KB,
                 )
                 continue
@@ -274,8 +274,10 @@ async def handle_updates(bot: Bot, session) -> None:
                 parts = []
                 for i in range(7):
                     d = day + timedelta(days=i)
-                    parts.append(render_day(await get_schedule(d, session),
- f"<b>{d:%d.%m.%Y}</b>"))
+                    parts.append(render_day(
+                        await get_schedule(d, session),
+                        f"<b>{d:%d.%m.%Y}</b>",
+                    ))
                 text = "🗓 <b>Расписание на неделю</b>\n\n" + "\n\n".join(parts)
 
             await bot.send_message(chat_id, text, parse_mode=ParseMode.HTML)
@@ -301,8 +303,10 @@ async def notify(bot: Bot, session, state: dict) -> None:
             fire_at = lesson["start"] - timedelta(minutes=minutes)
             if fire_at <= now < fire_at + WINDOW:
                 try:
-                    await bot.send_message(CHAT_ID, render_reminder(lesson, minutes),
-                                           parse_mode=ParseMode.HTML)
+                    await bot.send_message(
+                        CHAT_ID, render_reminder(lesson, minutes),
+                        parse_mode=ParseMode.HTML,
+                    )
                     log(f"Уведомление за {minutes} мин: {lesson['name']}")
                     done.add(key)
                 except Exception as e:
@@ -317,6 +321,7 @@ async def main() -> None:
 
     if not MODEUS_TOKEN:
         log("Без токена УрФУ работают только команды")
+
     bot = Bot(token=BOT_TOKEN)
     await bot.delete_webhook(drop_pending_updates=False)
 
