@@ -19,10 +19,10 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Установить зависимости
-        run: pip install selenium
+      - run: pip install selenium
 
       - name: Обновить секрет MODEUS_TOKEN
+        id: refresh
         env:
           URFU_USERNAME: ${{ secrets.URFU_USERNAME }}
           URFU_PASSWORD: ${{ secrets.URFU_PASSWORD }}
@@ -36,3 +36,11 @@ jobs:
           echo "::add-mask::$TOKEN"
           echo "$TOKEN" | gh secret set MODEUS_TOKEN
           echo "Секрет MODEUS_TOKEN обновлён"
+
+      - name: Приложить диагностику
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: modeus-debug
+          path: modeus_debug.html
+          if-no-files-found: ignore
