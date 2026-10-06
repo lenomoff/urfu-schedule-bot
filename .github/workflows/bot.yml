@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: urfu-bot
+  cancel-in-progress: false
+
 jobs:
   bot:
     runs-on: ubuntu-latest
@@ -59,10 +63,13 @@ jobs:
 
       - name: Сохранить state.json
         if: always()
+        continue-on-error: true
         run: |
-          touch state.json
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config pull.rebase true
+          touch state.json
           git add state.json
           git diff --staged --quiet || git commit -m "bot: state"
+          git pull --rebase origin main
           git push
