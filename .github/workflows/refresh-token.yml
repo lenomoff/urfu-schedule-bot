@@ -1,0 +1,21 @@
+name: Refresh Modeus Token
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install selenium webdriver-manager requests
+      - run: python refresh_token.py
+        env:
+          URFU_USERNAME: ${{ secrets.URFU_USERNAME }}
+          URFU_PASSWORD: ${{ secrets.URFU_PASSWORD }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          PROJECT_ID: ${{ secrets.PROJECT_ID }}
